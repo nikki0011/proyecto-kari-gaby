@@ -1,11 +1,11 @@
 import React, { useState } from "react";
 
-// Estructura de datos para el estado de ubicación
 interface UbicacionData {
   lat: number;
   lng: number;
   precision: number;
   direccion: string;
+  metodo: "GPS" | "IP";
 }
 
 export default function Ubicacion(): React.JSX.Element {
@@ -13,31 +13,53 @@ export default function Ubicacion(): React.JSX.Element {
   const [cargando, setCargando] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 1. Convertir Latitud y Longitud a Dirección (Reverse Geocoding)
+  // 1. Inversa de coordenadas a dirección (Nominatim)
   const obtenerDireccion = async (lat: number, lon: number): Promise<string> => {
     try {
       const respuesta = await fetch(
         `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`
       );
       if (!respuesta.ok) throw new Error("Error al consultar la API de mapa");
-
       const datos = await respuesta.json();
       return datos.display_name || "Dirección no encontrada";
     } catch (err) {
       console.error(err);
-      return "No se pudo obtener el nombre de la dirección";
+      return "Dirección no disponible";
     }
   };
 
-  // 2. Obtener la posición nativa del dispositivo
-  const solicitarUbicacion = (): void => {
-    if (!navigator.geolocation) {
-      setError("Tu navegador no admite geolocalización.");
-      return;
-    }
+  // 2. Respaldo: Obtener ubicación por IP si el GPS falla o expira
+  const obtenerUbicacionPorIP = async () => {
+    try {
+      const res = await fetch("https://ipapi.co/json/");
+      if (!res.ok) throw new Error("Error al obtener ubicación por IP");
+      const data = await res.json();
 
+      setUbicacion({
+        lat: data.latitude,
+        lng: data.longitude,
+        precision: 5000, // Aproximación por IP (alrededor de 5km)
+        direccion: `${data.city}, ${data.region}, ${data.country_name}`,
+        metodo: "IP",
+      });
+    } catch (err) {
+      console.error(err);
+      setError("No se pudo obtener la ubicación ni por GPS ni por IP.");
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  // 3. Función principal de solicitud
+  const solicitarUbicacion = (): void => {
     setCargando(true);
     setError(null);
+
+    if (!navigator.geolocation) {
+      // Si el navegador no lo soporta, ir directo a IP
+      obtenerUbicacionPorIP();
+      return;
+    }
 
     navigator.geolocation.getCurrentPosition(
       async (posicion: GeolocationPosition) => {
@@ -52,31 +74,20 @@ export default function Ubicacion(): React.JSX.Element {
           lng,
           precision,
           direccion,
+          metodo: "GPS",
         });
 
         setCargando(false);
       },
       (err: GeolocationPositionError) => {
-        setCargando(false);
-        switch (err.code) {
-          case err.PERMISSION_DENIED:
-            setError("Permiso denegado. Habilita la ubicación en tu navegador.");
-            break;
-          case err.POSITION_UNAVAILABLE:
-            setError("La información de ubicación no está disponible.");
-            break;
-          case err.TIMEOUT:
-            setError("La solicitud para obtener la ubicación expiró.");
-            break;
-          default:
-            setError("Ocurrió un error al obtener la ubicación.");
-            break;
-        }
+        console.warn("Fallo en la geolocalización nativa, activando respaldo por IP...", err);
+        // En caso de TIMEOUT, PERMISSION_DENIED u otro error, se recurre a la IP
+        obtenerUbicacionPorIP();
       },
       {
-        enableHighAccuracy: true,
-        timeout: 20000,
-    maximumAge: 60000,
+        enableHighAccuracy: false,
+        timeout: 4000, // Si en 4 segundos no responde el GPS, salta al respaldo por IP
+        maximumAge: 0,
       }
     );
   };
@@ -107,6 +118,19 @@ export default function Ubicacion(): React.JSX.Element {
       {/* Detalle de la ubicación */}
       {ubicacion && !cargando && (
         <div className="mt-6 space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200 text-sm">
+          <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+            <span className="font-bold text-slate-600">Origen de los datos:</span>
+            <span
+              className={`px-2 py-0.5 rounded text-xs font-bold ${
+                ubicacion.metodo === "GPS"
+                  ? "bg-emerald-100 text-emerald-800"
+                  : "bg-blue-100 text-blue-800"
+              }`}
+            >
+              {ubicacion.metodo === "GPS" ? "GPS / Navegador" : "Aproximación por IP"}
+            </span>
+          </div>
+
           <div>
             <span className="font-bold text-slate-600 block">Coordenadas:</span>
             <p className="font-mono text-slate-900">
